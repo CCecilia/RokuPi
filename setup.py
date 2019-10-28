@@ -9,6 +9,6 @@ setup(
     ],
     entry_points='''
         [console_scripts]
-        rokuPi=rokuPi:deploy
+        rokuPi=rokuPi:channel
     ''',
 )
