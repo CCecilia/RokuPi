@@ -1,0 +1,10 @@
+Click==7.0
+prompt-toolkit==1.0.14
+pyfiglet==0.8.post1
+Pygments==2.4.2
+PyInquirer==1.0.3
+regex==2019.8.19
+-e git+https://github.com/CCecilia/RokuPi.git@a72e80bfa55f6375bb485beaa95bd5a837a22c06#egg=RokuPi
+six==1.12.0
+virtualenv==16.7.7
+wcwidth==0.1.7
