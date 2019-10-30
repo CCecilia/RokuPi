@@ -138,8 +138,7 @@ class Channel:
 def deploy(channel_path, roku_ip):
     f = Figlet(font='slant')
     click.echo(f.renderText('RokuPi'))
-    # current_channel = Channel(channel_path)
-    current_channel = Channel('/Users/christiancecilia/Work/Roku')
+    current_channel = Channel(channel_path)
 
     # create config if non-existent
     if current_channel.config_file is None:
