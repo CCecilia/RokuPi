@@ -6,9 +6,10 @@ setup(
     py_modules=['rokuPi'],
     install_requires=[
         'Click',
+        'prompt-toolkit',
     ],
     entry_points='''
         [console_scripts]
-        rokuPi=rokuPi:channel
+        rokuPi=rokuPi:deploy
     ''',
 )
