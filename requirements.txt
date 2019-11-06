@@ -1,11 +1,15 @@
+certifi==2019.9.11
+chardet==3.0.4
 Click==7.0
+idna==2.8
 progress==1.5
 prompt-toolkit==1.0.14
 pyfiglet==0.8.post1
 Pygments==2.4.2
 PyInquirer==1.0.3
 regex==2019.8.19
--e git+https://github.com/CCecilia/RokuPi.git@6bc5f8329da5228ca407724c69890b553fc74271#egg=RokuPi
+requests==2.22.0
+-e git+https://github.com/CCecilia/RokuPi.git@9cc6541dc1d9071cc78927743c76b4115e9778a7#egg=RokuPi
 six==1.12.0
 urllib3==1.25.6
 virtualenv==16.7.7

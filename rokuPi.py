@@ -1,22 +1,23 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import click
+from distutils.dir_util import copy_tree
 import glob
 import ipaddress
 import json
 import os
-import re
-import shutil
-import xml.etree.ElementTree as eTree
-from distutils.dir_util import copy_tree
 from pathlib import Path
-
-import click
-import urllib3
-# from progress.bar import Bar
-from PyInquirer import prompt, ValidationError, Validator
 from pyfiglet import Figlet
+from PyInquirer import prompt, ValidationError, Validator
+import re
+import requests
+import subprocess
+from requests.auth import HTTPDigestAuth
+import shutil
+import urllib3
 from urllib3.exceptions import NewConnectionError, ConnectTimeoutError
+import xml.etree.ElementTree as eTree
 
 # Constants
 STANDARD_CHANNEL_STRUCTURE = [
@@ -60,13 +61,66 @@ class EmptyValidator(Validator):
                 cursor_position=len(value.text))
 
 
+class Channel:
+    def __init__(self, path_to_channel):
+        self.channel_path = Path(path_to_channel)
+        self.channel_contents = os.listdir(self.channel_path)
+        self.config_data = {}
+        self.config_file = self.get_config_file()
+        self.out_dir = self.get_out_dir()
+        self.manifest_data = None
+
+    def get_config_file(self):
+        """
+        Checks to see if config file is available in channel content
+        :return: Object, None -
+        """
+        if CONFIG_FILE in self.channel_contents:
+            return self.channel_path / CONFIG_FILE
+        else:
+            return None
+
+    def set_config_file_data(self):
+        self.config_file = self.channel_path / CONFIG_FILE
+        with open(self.config_file) as config_file:
+            self.config_data = json.load(config_file)
+
+    def get_out_dir(self):
+        out_path = os.path.join(self.channel_path, 'out')
+        if not os.path.exists(out_path):
+            os.mkdir(out_path)
+
+        return Path(out_path)
+
+    def get_channel_archive(self):
+        out_dir = self.get_out_dir()
+        for child in out_dir.iterdir():
+            if Path(child).is_file:
+                return Path(child)
+
+        return None
+
+    def __str__(self):
+        if {'title', 'major_version', 'minor_version', 'build_version'} <= set(self.manifest_data.keys()):
+            return f'{self.manifest_data["title"]}_' \
+                   f'{self.manifest_data["major_version"]}.' \
+                   f'{self.manifest_data["minor_version"]}.' \
+                   f'{self.manifest_data["build_version"]}'
+
+
 class Roku:
+    def __init__(self, device_data):
+        self.http = urllib3.PoolManager()
+        self.device_plugin_url = f'http://{device_data["ip_address"]}/plugin_install'
+        self.device_data = device_data
+
     @staticmethod
     def scan_network():
         """
-        Scans LAN for any available rokus.
+        Scans LAN using address resolution protocol for any available devices then .
         :return: List - an list of device dictionaries, removes any "Nones" before returning
         """
+        click.echo('Scanning netwrok for devices')
         network_ping_results = os.popen('arp -a').read()
         ip_list = [parse_ip_from_output(i) for i in network_ping_results.split('?')]
         device_list = [query_ip_address_for_device_info(ip) for ip in ip_list]
@@ -76,10 +130,51 @@ class Roku:
     @staticmethod
     def write_device_data_to_config(device_data, config_path):
         config_data = json.load(open(str(config_path), 'r'))
-        print(config_data)
+        print('before', config_data)
         config_data["device"] = device_data
         with open(str(config_path), 'w') as config_file:
             json.dump(config_data, config_file, indent=4)
+
+        print('after', config_data)
+
+    def delete_channel(self, device):
+        # delete_res = requests.get(
+        #     self.device_plugin_url.format(self.device_data["ip_address"]),
+        #     headers={
+        #         "Content-type": "multipart/form-data"
+        #     },
+        #     data={
+        #         "mysubmit": 'Delete'
+        #     },
+        #     files=None,
+        #     auth=HTTPDigestAuth(self.device_data["username"], ),
+        #     timeout=5
+        # )
+        click.echo('removing channel from  device')
+        self.send_key_press('home')
+        delete_cmd = f'curl --user {self.device_data["username"]}:{self.device_data["password"]} --digest -s -S ' \
+                     f'-F "mysubmit=Delete" ' \
+                     f'-F "archive=""" ' \
+                     f'{self.device_plugin_url}'
+        os.popen(delete_cmd).read()
+
+    def deploy_channel(self, channel):
+        archive_path = channel.get_channel_archive()
+        click.echo(f'deploying {channel.__str__()} channel from  device')
+        deploy_cmd = f'curl --user {self.device_data["username"]}:{self.device_data["password"]} --digest -s -S ' \
+                     f'-F "mysubmit=Install" ' \
+                     f'-F "archive=@{archive_path}" ' \
+                     f'{self.device_plugin_url}'
+        os.popen(deploy_cmd).read()
+
+    def send_key_press(self, key_press):
+        if isinstance(key_press, str):
+            if key_press.count(key_press[0]) == len(key_press):
+                key_press = f'Lit_{key_press}'
+
+            requests.post(f'http://{self.device_data["ip_address"]}:8060/keypress/{key_press}')
+        else:
+            raise ValueError('key_press must be a non empty string')
 
     def __str__(self):
         return 'Roku'
@@ -141,6 +236,7 @@ def device_selection():
     available_devices = Roku.scan_network()
     device = {}
     write_to_config = False
+    click.echo('Starting network scan....')
     if len(available_devices) > 0:
         device_selection_questions = [
             {
@@ -161,14 +257,17 @@ def device_selection():
                 'message': 'Do you want to save this device'
             }
         ]
-        device_selection_answers = prompt(device_selection_questions)
-        device_selection_answers["device"][0]["password"] = device_selection_answers["password"]
-        device = device_selection_answers["device"][0]
-        write_to_config = device_selection_answers["save_device"]
+        try:
+            device_selection_answers = prompt(device_selection_questions)
+            device_selection_answers["device"][0]["password"] = device_selection_answers["password"]
+            device = device_selection_answers["device"][0]
+            write_to_config = device_selection_answers["save_device"]
+        except KeyError:
+            click.echo('an error occurred with device selection')
     else:
         click.echo('no devices found on network')
         add_roku_config = click.prompt('Would you like to define one manually y/n', type=str, default='y')
-        if add_roku_config == 'y':
+        if handle_yes_no_response(add_roku_config):
             device_questions = [
                 {
                     "type": 'input',
@@ -205,45 +304,6 @@ def device_selection():
     }
 
 
-class Channel:
-    def __init__(self, path_to_channel):
-        self.channel_path = Path(path_to_channel)
-        self.channel_contents = os.listdir(self.channel_path)
-        self.config_data = {}
-        self.config_file = self.get_config_file()
-        self.out_dir = self.get_out_dir()
-        self.manifest_data = None
-
-    def get_config_file(self):
-        """
-        Checks to see if config file is available in channel content
-        :return: Object, None -
-        """
-        if CONFIG_FILE in self.channel_contents:
-            return self.channel_path / CONFIG_FILE
-        else:
-            return None
-
-    def set_config_file_data(self):
-        self.config_file = self.channel_path / CONFIG_FILE
-        with open(self.config_file) as config_file:
-            self.config_data = json.load(config_file)
-
-    def get_out_dir(self):
-        out_path = os.path.join(self.channel_path, 'out')
-        if not os.path.exists(out_path):
-            os.mkdir(out_path)
-
-        return Path(out_path)
-
-    def __str__(self):
-        if {'title', 'major_version', 'minor_version', 'build_version'} <= set(self.manifest_data.keys()):
-            return f'{self.manifest_data["title"]}_' \
-                   f'{self.manifest_data["major_version"]}.' \
-                   f'{self.manifest_data["minor_version"]}.' \
-                   f'{self.manifest_data["build_version"]}'
-
-
 def parse_manifest(manifest_path):
     """
     Parses channel manifest channel data
@@ -264,8 +324,8 @@ def parse_manifest(manifest_path):
 def create_config_file(glob_list, destination_path):
     """
     Parses channel manifest channel data
-    :param glob_list - List - list of file that need to be deployed for channel
-    :param destination_path - String - path
+    :param glob_list: List - list of file that need to be deployed for channel
+    :param destination_path: String - path
     """
     config_data = {
         "files": glob_list
@@ -275,6 +335,11 @@ def create_config_file(glob_list, destination_path):
 
 
 def empty_dir(dir_to_empty):
+    """
+    Empties directory of files and child directories
+    :param dir_to_empty: String - path of directory to be emptied
+    :return:
+    """
     for root, dirs, files in os.walk(dir_to_empty):
         for f in files:
             os.unlink(os.path.join(root, f))
@@ -283,6 +348,12 @@ def empty_dir(dir_to_empty):
 
 
 def stage_channel_contents(channel_path, glob_array):
+    """
+    Empties/creates staging dir then copying channel files to it to be archived
+    :param channel_path: Object - path object to channel root
+    :param glob_array: List - list of content thats needs to staged for channel
+    :return:
+    """
     stage_dir_path = channel_path / STAGE_DIR
 
     if stage_dir_path.exists():
@@ -295,6 +366,13 @@ def stage_channel_contents(channel_path, glob_array):
 
 
 def copy_content_to_staging_dir(channel_path, content_path):
+    """
+    Copies files defined in channel config to the staging in preparation
+    for archiving
+    :param channel_path: String - path to the channel root
+    :param content_path: String - path of the content defined in channel config
+    :return:
+    """
     for from_path in glob.glob(os.path.join(channel_path, content_path)):
         from_path = Path(from_path)
         to_path = channel_path / STAGE_DIR / from_path.relative_to(channel_path)
@@ -314,6 +392,12 @@ def copy_content_to_staging_dir(channel_path, content_path):
 
 
 def archive_staged_content_to_out(staging_dir_path, out_dir_path):
+    """
+    Creates an archive out of the contents in the staging directory
+    :param staging_dir_path: Object path object to staging dir with to be zipped
+    :param out_dir_path: Object path object to where the archive is going
+    :return:
+    """
     if not out_dir_path.parent.exists():
         os.mkdir(str(out_dir_path.parent))
 
@@ -323,6 +407,25 @@ def archive_staged_content_to_out(staging_dir_path, out_dir_path):
     shutil.make_archive(out_dir_path, 'zip', staging_dir_path)
 
 
+def handle_yes_no_response(response):
+    """
+    Handles serializing y/n responses
+    :param response: String - should y or n or yes or no
+    :return: Bool
+    """
+    if isinstance(response, str):
+        if len(response) > 0:
+            if response[:1].lower() == 'y':
+                return True
+            elif response[:1].lower() == 'n':
+                return False
+        click.echo('Please respond y/n only')
+        return False
+    else:
+        click.echo('Please respond y/n only')
+        return False
+
+# pip install --editable .
 @click.command()
 @click.option('-c',
               '--channel',
@@ -343,14 +446,15 @@ def deploy(channel_path, roku_ip):
     if current_channel.config_file is None:
         create_config_response = click.prompt('Would like to create config file y/n ', type=str, default='y')
 
-        if create_config_response.lower() == 'y':
+        if handle_yes_no_response(create_config_response):
+            handle_yes_no_response(create_config_response)
             click.echo(f'Default structure \n{STANDARD_CHANNEL_STRUCTURE}\nThis can be updated later')
             use_default_channel_structure = click.prompt(
                 'Would you like to use default channel structure y/n',
                 type=str,
                 default='y'
             )
-            if use_default_channel_structure.lower() == 'y':
+            if handle_yes_no_response(use_default_channel_structure):
                 create_config_file(STANDARD_CHANNEL_STRUCTURE, current_channel.channel_path)
             else:
                 example = 'manifest, someDir/**, anotherDir/**'
@@ -379,6 +483,7 @@ def deploy(channel_path, roku_ip):
     empty_dir(str(stage_dir_path))
     stage_dir_path.rmdir()
 
+    # device selection
     if roku_ip is None:
         device_selection_results = None
         # No device defined in config
@@ -393,7 +498,7 @@ def deploy(channel_path, roku_ip):
                                            type=str,
                                            default='y')
             # not using device in config but there is one
-            if use_config_roku.lower() != 'y':
+            if not handle_yes_no_response(use_config_roku):
                 device_selection_results = device_selection()
                 device = device_selection_results["device"]
         # scanning/manual input device saving
@@ -408,6 +513,7 @@ def deploy(channel_path, roku_ip):
             "ip_address": roku_ip
         }
         try:
+            # validate ip
             if ipaddress.ip_address(device["ip_address"]):
                 device_password = click.prompt('device password', type=str, hide_input=True)
                 device["password"] = device_password
@@ -415,7 +521,7 @@ def deploy(channel_path, roku_ip):
                 click.echo("IP address needs to be in IPV4 format")
         except ValueError:
             click.echo("IP address needs to be in IPV4 format")
-
+        # ping device for availability
         data_from_device = query_ip_address_for_device_info(roku_ip)
         if data_from_device is None:
             click.echo("Unable to establish connection with device")
@@ -423,11 +529,13 @@ def deploy(channel_path, roku_ip):
         else:
             device["name"] = data_from_device["value"]["name"]
             save_device = click.prompt('Do you want to save this device y/n',  type=str, default='y')
-            if save_device == 'y':
+            if handle_yes_no_response(save_device):
                 Roku.write_device_data_to_config(device, current_channel.config_file)
                 current_channel.set_config_file_data()
 
-
+    roku = Roku(device)
+    roku.delete_channel(device)
+    roku.deploy_channel(current_channel)
 
 
 if __name__ == '__main__':
