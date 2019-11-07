@@ -211,7 +211,7 @@ def handle_yes_no_response(response):
         click.echo('Please respond y/n only')
         return False
 
-# pip install --editable .
+
 @click.command()
 @click.option('-c',
               '--channel',
