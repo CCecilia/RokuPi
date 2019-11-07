@@ -2,234 +2,20 @@
 # -*- coding: utf-8 -*-
 
 import click
-from distutils.dir_util import copy_tree
 import glob
 import ipaddress
 import json
 import os
+import shutil
+
+from channel import Channel
+from constants import (STANDARD_CHANNEL_STRUCTURE, CONFIG_FILE, STAGE_DIR)
+from distutils.dir_util import copy_tree
 from pathlib import Path
 from pyfiglet import Figlet
-from PyInquirer import prompt, ValidationError, Validator
-import re
-import requests
-import subprocess
-from requests.auth import HTTPDigestAuth
-import shutil
-import urllib3
-from urllib3.exceptions import NewConnectionError, ConnectTimeoutError
-import xml.etree.ElementTree as eTree
-
-# Constants
-STANDARD_CHANNEL_STRUCTURE = [
-    'manifest',
-    'components/**',
-    'source/**',
-    'images/**'
-]
-CONFIG_FILE = 'rokuPiConfig.json'
-STAGE_DIR = 'rokuPiTemp'
-
-
-class IpAddressValidator(Validator):
-    def validate(self, value):
-        if len(value.text):
-            try:
-                if ipaddress.ip_address(value.text):
-                    return True
-                else:
-
-                    raise ValidationError(
-                        message="IP address needs to be in IPV4 format",
-                        cursor_position=len(value.text))
-            except ValueError:
-                raise ValidationError(
-                    message="IP address needs to be in IPV4 format",
-                    cursor_position=len(value.text))
-        else:
-            raise ValidationError(
-                message="You can't leave this blank",
-                cursor_position=len(value.text))
-
-
-class EmptyValidator(Validator):
-    def validate(self, value):
-        if len(value.text):
-            return True
-        else:
-            raise ValidationError(
-                message="You can't leave this blank",
-                cursor_position=len(value.text))
-
-
-class Channel:
-    def __init__(self, path_to_channel):
-        self.channel_path = Path(path_to_channel)
-        self.channel_contents = os.listdir(self.channel_path)
-        self.config_data = {}
-        self.config_file = self.get_config_file()
-        self.out_dir = self.get_out_dir()
-        self.manifest_data = None
-
-    def get_config_file(self):
-        """
-        Checks to see if config file is available in channel content
-        :return: Object, None -
-        """
-        if CONFIG_FILE in self.channel_contents:
-            return self.channel_path / CONFIG_FILE
-        else:
-            return None
-
-    def set_config_file_data(self):
-        self.config_file = self.channel_path / CONFIG_FILE
-        with open(self.config_file) as config_file:
-            self.config_data = json.load(config_file)
-
-    def get_out_dir(self):
-        out_path = os.path.join(self.channel_path, 'out')
-        if not os.path.exists(out_path):
-            os.mkdir(out_path)
-
-        return Path(out_path)
-
-    def get_channel_archive(self):
-        out_dir = self.get_out_dir()
-        for child in out_dir.iterdir():
-            if Path(child).is_file:
-                return Path(child)
-
-        return None
-
-    def __str__(self):
-        if {'title', 'major_version', 'minor_version', 'build_version'} <= set(self.manifest_data.keys()):
-            return f'{self.manifest_data["title"]}_' \
-                   f'{self.manifest_data["major_version"]}.' \
-                   f'{self.manifest_data["minor_version"]}.' \
-                   f'{self.manifest_data["build_version"]}'
-
-
-class Roku:
-    def __init__(self, device_data):
-        self.http = urllib3.PoolManager()
-        self.device_plugin_url = f'http://{device_data["ip_address"]}/plugin_install'
-        self.device_data = device_data
-
-    @staticmethod
-    def scan_network():
-        """
-        Scans LAN using address resolution protocol for any available devices then .
-        :return: List - an list of device dictionaries, removes any "Nones" before returning
-        """
-        click.echo('Scanning netwrok for devices')
-        network_ping_results = os.popen('arp -a').read()
-        ip_list = [parse_ip_from_output(i) for i in network_ping_results.split('?')]
-        device_list = [query_ip_address_for_device_info(ip) for ip in ip_list]
-
-        return [device for device in device_list if device is not None]
-
-    @staticmethod
-    def write_device_data_to_config(device_data, config_path):
-        config_data = json.load(open(str(config_path), 'r'))
-        print('before', config_data)
-        config_data["device"] = device_data
-        with open(str(config_path), 'w') as config_file:
-            json.dump(config_data, config_file, indent=4)
-
-        print('after', config_data)
-
-    def delete_channel(self, device):
-        # delete_res = requests.get(
-        #     self.device_plugin_url.format(self.device_data["ip_address"]),
-        #     headers={
-        #         "Content-type": "multipart/form-data"
-        #     },
-        #     data={
-        #         "mysubmit": 'Delete'
-        #     },
-        #     files=None,
-        #     auth=HTTPDigestAuth(self.device_data["username"], ),
-        #     timeout=5
-        # )
-        click.echo('removing channel from  device')
-        self.send_key_press('home')
-        delete_cmd = f'curl --user {self.device_data["username"]}:{self.device_data["password"]} --digest -s -S ' \
-                     f'-F "mysubmit=Delete" ' \
-                     f'-F "archive=""" ' \
-                     f'{self.device_plugin_url}'
-        os.popen(delete_cmd).read()
-
-    def deploy_channel(self, channel):
-        archive_path = channel.get_channel_archive()
-        click.echo(f'deploying {channel.__str__()} channel from  device')
-        deploy_cmd = f'curl --user {self.device_data["username"]}:{self.device_data["password"]} --digest -s -S ' \
-                     f'-F "mysubmit=Install" ' \
-                     f'-F "archive=@{archive_path}" ' \
-                     f'{self.device_plugin_url}'
-        os.popen(deploy_cmd).read()
-
-    def send_key_press(self, key_press):
-        if isinstance(key_press, str):
-            if key_press.count(key_press[0]) == len(key_press):
-                key_press = f'Lit_{key_press}'
-
-            requests.post(f'http://{self.device_data["ip_address"]}:8060/keypress/{key_press}')
-        else:
-            raise ValueError('key_press must be a non empty string')
-
-    def __str__(self):
-        return 'Roku'
-
-
-def parse_ip_from_output(output_string):
-    """
-    Parses ip address out from arp output
-    :param output_string - String -
-    :return: String, None - either none if device didn't respond or timed out
-    """
-    if output_string != '':
-        ip_address = re.split(' ', output_string.lstrip(), 2)[0][1:-1]
-
-        try:
-            if ipaddress.ip_address(ip_address):
-                return ip_address
-        except ValueError:
-            click.echo(f'got {ip_address} instead of ip')
-
-
-def query_ip_address_for_device_info(ip_address):
-    """
-    Pings each ip address to see with roku query device,
-    checks for response back then will parse device data xml
-    :param ip_address - String - ip address IPV4 to ping with device query
-    :return: Dictionary - dict is formatted for PyInquirer's choices, and contains available device info
-    """
-    timeout = urllib3.Timeout(connect=2.0, read=7.0)
-    http = urllib3.PoolManager(timeout=timeout)
-    if isinstance(ip_address, str):
-        url = f'http://{ip_address}:8060/query/device-info'
-        try:
-            response = http.request('GET', url, retries=False)
-            if response.status == 200:
-                data = response.data
-                if isinstance(data, bytes):
-                    tree = eTree.fromstring(data)
-                    for child in tree:
-                        if child.tag == 'friendly-model-name':
-                            return {
-                                'name': f'{child.text} - {ip_address}',
-                                'value': {
-                                    'name': child.text,
-                                    'username': 'rokudev',
-                                    'ip_address': ip_address,
-                                    'password': ''
-                                }
-                            }
-        except NewConnectionError:
-            click.echo(f'Unable to establish connection with {ip_address}')
-            return None
-        except ConnectTimeoutError:
-            click.echo(f'Connection timed out connecting to {ip_address}')
-            return None
+from PyInquirer import prompt
+from roku import query_ip_address_for_device_info, Roku
+from validators import EmptyValidator, IpAddressValidator
 
 
 def device_selection():
@@ -534,7 +320,7 @@ def deploy(channel_path, roku_ip):
                 current_channel.set_config_file_data()
 
     roku = Roku(device)
-    roku.delete_channel(device)
+    roku.delete_channel()
     roku.deploy_channel(current_channel)
 
 
