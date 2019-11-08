@@ -224,8 +224,8 @@ def handle_yes_no_response(response):
               help='Ip address to roku',
               required=False)
 def deploy(channel_path, roku_ip):
-    f = Figlet(font='slant')
-    click.echo(f.renderText('RokuPi'))
+    fig = Figlet(font='slant')
+    click.echo(fig.renderText('RokuPi'))
     current_channel = Channel(channel_path)
 
     # create config if non-existent
