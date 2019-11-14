@@ -7,8 +7,10 @@ import ipaddress
 import json
 import os
 import shutil
+import telnetlib
 
 from channel import Channel
+from debugger import Debugger
 from constants import (STANDARD_CHANNEL_STRUCTURE, CONFIG_FILE, STAGE_DIR)
 from distutils.dir_util import copy_tree
 from pathlib import Path
@@ -223,7 +225,10 @@ def handle_yes_no_response(response):
               'roku_ip',
               help='Ip address to roku',
               required=False)
-def deploy(channel_path, roku_ip):
+@click.option('--debugger', 'debugger', flag_value=True,
+              default=True)
+@click.option('--no-debugger', 'debugger', flag_value=False)
+def deploy(channel_path, roku_ip, debugger):
     f = Figlet(font='slant')
     click.echo(f.renderText('RokuPi'))
     current_channel = Channel(channel_path)
@@ -322,6 +327,11 @@ def deploy(channel_path, roku_ip):
     roku = Roku(device)
     roku.delete_channel()
     roku.deploy_channel(current_channel)
+
+    if debugger:
+        debugger_interface = Debugger(roku)
+        # debugger_interface.send_debug_command('fps_display')
+        debugger_interface.start_session()
 
 
 if __name__ == '__main__':
