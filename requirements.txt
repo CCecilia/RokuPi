@@ -11,6 +11,6 @@ regex==2019.8.19
 requests==2.22.0
 -e git+https://github.com/CCecilia/RokuPi.git@9cc6541dc1d9071cc78927743c76b4115e9778a7#egg=RokuPi
 six==1.12.0
-urllib3==1.25.6
+urllib3==1.25.8
 virtualenv==16.7.7
 wcwidth==0.1.7
